@@ -2,6 +2,120 @@
 
 All notable changes to claude-mem.
 
+## [v10.6.2] - 2026-03-21
+
+## fix: Activity spinner stuck spinning forever
+
+The viewer UI activity spinner would spin indefinitely because `isAnySessionProcessing()` queried all pending/processing messages in the database globally — including orphaned messages from dead sessions that no generator would ever process. These orphans caused `isProcessing=true` forever.
+
+### Changes
+
+- Scoped `isAnySessionProcessing()` and `hasPendingMessages()` to only check sessions in the active in-memory Map, so orphaned DB messages no longer affect the spinner
+- Added `terminateSession()` method enforcing a restart-or-terminate invariant — every generator exit must either restart or fully clean up
+- Fixed 3 zombie paths in the `.finally()` handler that previously left sessions alive in memory with no generator running
+- Fixed idle-timeout race condition where fresh messages arriving between idle abort and cleanup could be silently dropped
+- Removed redundant bare `isProcessing: true` broadcast and eliminated double-iteration in `broadcastProcessingStatus()`
+- Replaced inline `require()` with proper accessor via `sessionManager.getPendingMessageStore()`
+- Added 8 regression tests for session termination invariant
+
+## [v10.6.1] - 2026-03-18
+
+### New Features
+- **Timeline Report Skill** — New `/timeline-report` skill generates narrative "Journey Into [Project]" reports from claude-mem's development history with token-aware economics
+- **Git Worktree Detection** — Timeline report automatically detects git worktrees and uses parent project as data source
+- **Compressed Context Output** — Markdown context injection compressed ~53% (tables → compact flat lines), reducing token overhead in session starts
+- **Full Observation Fetch** — Added `full=true` parameter to `/api/context/inject` for fetching all observations
+
+### Improvements
+- Split `TimelineRenderer` into separate markdown/color rendering paths
+- Fixed timestamp ditto marker leaking across session summary boundaries
+
+### Security
+- Removed arbitrary file write vulnerability (`dump_to_file` parameter)
+
+## [v10.6.0] - 2026-03-18
+
+## OpenClaw: System prompt context injection
+
+The OpenClaw plugin no longer writes to `MEMORY.md`. Instead, it injects the observation timeline into each agent's system prompt via the `before_prompt_build` hook using `appendSystemContext`. This keeps `MEMORY.md` under the agent's control for curated long-term memory. Context is cached for 60 seconds per project.
+
+## New `syncMemoryFileExclude` config
+
+Exclude specific agent IDs from automatic context injection (e.g., `["snarf", "debugger"]`). Observations are still recorded for excluded agents — only the context injection is skipped.
+
+## Fix: UI settings now preserve falsy values
+
+The viewer settings hook used `||` instead of `??`, which silently replaced backend values like `'0'`, `'false'`, and `''` with UI defaults. Fixed with nullish coalescing. Frontend defaults now aligned with backend `SettingsDefaultsManager`.
+
+## Documentation
+
+- Updated `openclaw-integration.mdx` and `openclaw/SKILL.md` to reflect system prompt injection behavior
+- Fixed "prompt injection" → "context injection" terminology to avoid confusion with the OWASP security term
+
+## [v10.5.6] - 2026-03-16
+
+## Patch: Process Supervisor Hardening & Logging Cleanup
+
+### Fixes
+- **Downgrade HTTP request/response logging from INFO to DEBUG** — eliminates noisy per-request log spam from the viewer UI polling
+- **Fix `isPidAlive(0)` returning true** — PID 0 is the kernel scheduler, not a valid child process
+- **Fix signal handler race condition** — added `shutdownInitiated` flag to prevent duplicate shutdown cascades when signals arrive before `stopPromise` is set
+- **Remove unused `dataDir` parameter** from `ShutdownCascadeOptions`
+- **Export and reuse env sanitizer constants** — `Server.ts` now imports `ENV_PREFIXES`/`ENV_EXACT_MATCHES` from `env-sanitizer.ts` instead of duplicating them
+- **Rename `zombiePidFiles` to `deadProcessPids`** — now returns actual PID array instead of a boolean
+- **Use `buildWorkerUrl` helper** in `workerHttpRequest` instead of inline URL construction
+- **Remove unused `getWorkerPort` imports** from observation and session-init handlers
+- **Upgrade `reapSession` failure log** from debug to warn level
+- **Clean up `.gitignore`** — remove stale `~*/`, `http*/`, `https*/` patterns and duplicate `datasets/` entry
+
+### Tests
+- Rewrote supervisor index tests to use temp directories instead of relying on real `~/.claude-mem/worker.pid`
+- Added deterministic test cases for missing, invalid, stale, and alive PID file states
+- Removed unused `dataDir` from shutdown test fixtures
+
+## [v10.5.5] - 2026-03-09
+
+### Bug Fix
+
+- **Fixed empty context queries after mode switching**: Switching from a non-code mode (e.g., law-study) back to code mode left stale observation type/concept filters in `settings.json`, causing all context queries to return empty results. All modes now read types/concepts from their mode JSON definition uniformly.
+
+### Cleanup
+
+- Removed dead `CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES` and `CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS` settings constants
+- Deleted `src/constants/observation-metadata.ts` (no longer needed)
+- Removed observation type/concept filter UI controls from the viewer's Context Settings modal
+
+## [v10.5.4] - 2026-03-09
+
+## Bug Fixes
+
+- **fix: restore modes to correct location** — All modes (`code`, code language variants, `email-investigation`) were erroneously moved from `plugin/modes/` to `plugin/hooks/modes/` during the v10.5.3 release, breaking mode loading. This patch restores them to `plugin/modes/` where they belong.
+
+## [v10.5.3] - 2026-03-09
+
+## What's New
+
+### Law Study Mode
+
+Adds `law-study` — a purpose-built claude-mem mode for law students.
+
+**Observation Types:**
+- **Case Holding** — 2-3 sentence brief with extracted legal rule
+- **Issue Pattern** — exam trigger or fact pattern that signals a legal issue
+- **Prof Framework** — professor's analytical lens and emphasis for a topic
+- **Doctrine / Rule** — legal test or standard synthesized from cases/statutes
+- **Argument Structure** — legal argument or counter-argument worked through analytically
+- **Cross-Case Connection** — insight linking cases or doctrines to reveal a deeper principle
+
+**Concepts (cross-cutting tags):**
+`exam-relevant` · `minority-position` · `gotcha` · `unsettled-law` · `policy-rationale` · `course-theme`
+
+**Chill Variant** — `law-study--chill` records only high-signal items: issue patterns, gotchas, and professor frameworks. Skips routine case holdings unless the result is counterintuitive.
+
+**CLAUDE.md Template** — `law-study-CLAUDE.md` is a drop-in template for any law study project directory. It configures Claude as a Socratic legal study partner: precise case briefs, critical document analysis, issue spotting, and doctrine synthesis — without writing exam answers for the student.
+
+Activate with: `/mode law-study` or `/mode law-study--chill`
+
 ## [v10.5.2] - 2026-02-26
 
 ## Smart Explore Benchmark Docs & Skill Update
@@ -996,196 +1110,4 @@ This release adds the `/do` and `/make-plan` development commands to the plugin 
 ### Full Changelog
 
 https://github.com/thedotmack/claude-mem/compare/v9.0.3...v9.0.4
-
-## [v9.0.3] - 2026-01-10
-
-## Bug Fixes
-
-### Hook Framework JSON Status Output (#655)
-
-Fixed an issue where the worker service startup wasn't producing proper JSON status output for the Claude Code hook framework. This caused hooks to appear stuck or unresponsive during worker initialization.
-
-**Changes:**
-- Added `buildStatusOutput()` function for generating structured JSON status output
-- Worker now outputs JSON with `status`, `message`, and `continue` fields on stdout
-- Proper exit code 0 ensures Windows Terminal compatibility (no tab accumulation)
-- `continue: true` flag ensures Claude Code continues processing after hook execution
-
-**Technical Details:**
-- Extracted status output generation into a pure, testable function
-- Added comprehensive test coverage in `tests/infrastructure/worker-json-status.test.ts`
-- 23 passing tests covering unit, CLI integration, and hook framework compatibility
-
-## Housekeeping
-
-- Removed obsolete error handling baseline file
-
-## [v9.0.2] - 2026-01-10
-
-## Bug Fixes
-
-- **Windows Terminal Tab Accumulation (#625, #628)**: Fixed terminal tab accumulation on Windows by implementing graceful exit strategy. All expected failure scenarios (port conflicts, version mismatches, health check timeouts) now exit with code 0 instead of code 1.
-- **Windows 11 Compatibility (#625)**: Replaced deprecated WMIC commands with PowerShell `Get-Process` and `Get-CimInstance` for process enumeration. WMIC is being removed from Windows 11.
-
-## Maintenance
-
-- **Removed Obsolete CLAUDE.md Files**: Cleaned up auto-generated CLAUDE.md files from `~/.claude/plans/` and `~/.claude/plugins/marketplaces/` directories.
-
----
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v9.0.1...v9.0.2
-
-## [v9.0.1] - 2026-01-08
-
-## Bug Fixes
-
-### Claude Code 2.1.1 Compatibility
-- Fixed hook architecture for compatibility with Claude Code 2.1.0/2.1.1
-- Context is now injected silently via SessionStart hook
-- Removed deprecated `user-message-hook` (no longer used in CC 2.1.0+)
-
-### Path Validation for CLAUDE.md Distribution
-- Added `isValidPathForClaudeMd()` to reject malformed paths:
-  - Tilde paths (`~`) that Node.js doesn't expand
-  - URLs (`http://`, `https://`)
-  - Paths with spaces (likely command text or PR references)
-  - Paths with `#` (GitHub issue/PR references)
-  - Relative paths that escape project boundary
-- Cleaned up 12 invalid CLAUDE.md files created by bug artifacts
-- Updated `.gitignore` to prevent future accidents
-
-### Log-Level Audit
-- Promoted 38+ WARN messages to ERROR level for improved debugging:
-  - Parser: observation type errors, data contamination
-  - SDK/Agents: empty init responses (Gemini, OpenRouter)
-  - Worker/Queue: session recovery, auto-recovery failures
-  - Chroma: sync failures, search failures
-  - SQLite: search failures
-  - Session/Generator: failures, missing context
-  - Infrastructure: shutdown, process management failures
-
-## Internal Changes
-- Removed hardcoded fake token counts from context injection
-- Standardized Claude Code 2.1.0 note wording across documentation
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v9.0.0...v9.0.1
-
-## [v9.0.0] - 2026-01-06
-
-## 🚀 Live Context System
-
-Version 9.0.0 introduces the **Live Context System** - a major new capability that provides folder-level activity context through auto-generated CLAUDE.md files.
-
-### ✨ New Features
-
-#### Live Context System
-- **Folder CLAUDE.md Files**: Each directory now gets an auto-generated CLAUDE.md file containing a chronological timeline of recent development activity
-- **Activity Timelines**: Tables show observation ID, time, type, title, and estimated token cost for relevant work in each folder
-- **Worktree Support**: Proper detection of git worktrees with project-aware filtering to show only relevant observations per worktree
-- **Configurable Limits**: Control observation count via `CLAUDE_MEM_CONTEXT_OBSERVATIONS` setting
-
-#### Modular Architecture Refactor
-- **Service Layer Decomposition**: Major refactoring from monolithic worker-service to modular domain services
-- **SQLite Module Extraction**: Database operations split into dedicated modules (observations, sessions, summaries, prompts, timeline)
-- **Context Builder System**: New modular context generation with TimelineRenderer, FooterRenderer, and ObservationCompiler
-- **Error Handler Centralization**: Unified Express error handling via ErrorHandler module
-
-#### SDK Agent Improvements
-- **Session Resume**: Memory sessions can now resume across Claude conversations using SDK session IDs
-- **Memory Session ID Tracking**: Proper separation of content session IDs from memory session IDs
-- **Response Processor Refactor**: Cleaner message handling and observation extraction
-
-### 🔧 Improvements
-
-#### Windows Stability
-- Fixed Windows PowerShell variable escaping in hook execution
-- Improved IPC detection for Windows managed mode
-- Better PATH handling for Bun and uv on Windows
-
-#### Settings & Configuration
-- **Auto-Creation**: Settings file automatically created with defaults on first run
-- **Worker Host Configuration**: `CLAUDE_MEM_WORKER_HOST` setting for custom worker endpoints
-- Settings validation with helpful error messages
-
-#### MCP Tools
-- Standardized naming: "MCP tools" terminology instead of "mem-search skill"
-- Improved tool descriptions for better Claude integration
-- Context injection API now supports worktree parameter
-
-### 📚 Documentation
-- New **Folder Context Files** documentation page
-- **Worktree Support** section explaining git worktree behavior
-- Updated architecture documentation reflecting modular refactor
-- v9.0 release notes in introduction page
-
-### 🐛 Bug Fixes
-- Fixed stale session resume crash when SDK session is orphaned
-- Fixed logger serialization bug causing silent ChromaSync failures
-- Fixed CLAUDE.md path resolution in worktree environments
-- Fixed date preservation in folder timeline generation
-- Fixed foreign key constraint issues in observation storage
-- Resolved multiple TypeScript type errors across codebase
-
-### 🗑️ Removed
-- Deprecated context-generator.ts (functionality moved to modular system)
-- Obsolete queue analysis documents
-- Legacy worker wrapper scripts
-
----
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.5.10...v9.0.0
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-## [v8.5.10] - 2026-01-06
-
-## Bug Fixes
-
-- **#545**: Fixed `formatTool` crash when parsing non-JSON tool inputs (e.g., raw Bash commands)
-- **#544**: Fixed terminology in context hints - changed "mem-search skill" to "MCP tools"
-- **#557**: Settings file now auto-creates with defaults on first run (no more "module loader" errors)
-- **#543**: Fixed hook execution by switching runtime from `node` to `bun` (resolves `bun:sqlite` issues)
-
-## Code Quality
-
-- Fixed circular dependency between Logger and SettingsDefaultsManager
-- Added 72 integration tests for critical coverage gaps
-- Cleaned up mock-heavy tests causing module cache pollution
-
-## Full Changelog
-
-See PR #558 for complete details and diagnostic reports.
-
-## [v8.5.9] - 2026-01-04
-
-## What's New
-
-### Context Header Timestamp
-
-The context injection header now displays the current date and time, making it easier to understand when context was generated.
-
-**Example:** `[claude-mem] recent context, 2026-01-04 2:46am EST`
-
-This appears in both terminal (colored) output and markdown format, including empty state messages.
-
----
-
-**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v8.5.8...v8.5.9
-
-## [v8.5.8] - 2026-01-04
-
-## Bug Fixes
-
-- **#511**: Add `gemini-3-flash` model to GeminiAgent with proper rate limits and validation
-- **#517**: Fix Windows process management by replacing PowerShell with WMIC (fixes Git Bash/WSL compatibility)
-- **#527**: Add Apple Silicon Homebrew paths (`/opt/homebrew/bin`) for `bun` and `uv` detection
-- **#531**: Remove duplicate type definitions from `export-memories.ts` using shared bridge file
-
-## Tests
-
-- Added regression tests for PR #542 covering Gemini model support, WMIC parsing, Apple Silicon paths, and export type refactoring
-
-## Documentation
-
-- Added detailed analysis reports for GitHub issues #511, #514, #517, #520, #527, #531, #532
 
